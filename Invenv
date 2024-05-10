@@ -1,0 +1,590 @@
+//#Program name: M08.CPP
+//#Author: Nooreddin Hellalat
+//#Date last updated: 05/8/2024
+//#Purpose: See project proposal
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <stdexcept>
+#include <unordered_map>
+#include <queue>
+#include <stack>
+#include <vector>
+#include <map>
+#include <algorithm>
+#include <sstream>
+#include <limits>
+
+using namespace std;
+
+// Item
+struct InventoryItem {
+    string name;
+    int quantity;
+    double price;
+    InventoryItem(const string& n, int q, double p) : name(n), quantity(q), price(p) {}
+};
+
+// Node structure for Binary Search Tree
+struct TreeNode {
+    InventoryItem item;
+    TreeNode* left;
+    TreeNode* right;
+    TreeNode(const InventoryItem& i) : item(i), left(nullptr), right(nullptr) {}
+};
+
+// Inventory management class
+class InventoryManager {
+private:
+    TreeNode* root; // Root of the BST
+    unordered_map<string, int> notificationThresholds; // O(1) lookup for thresholds
+    queue<string> purchaseOrders; // Queue for managing purchase orders
+    stack<pair<string, int>> undoStack; // Stack for undo functionality
+    stack<pair<string, int>> redoStack; // Stack for redo functionality
+    vector<string> eventLog; // Vector for managing event log
+    string currentFilename; // To store the current inventory file name
+    map<string, int> dailySales; // Map to store daily sales
+
+public:
+    // Constructor
+    InventoryManager() : root(nullptr) {}
+
+    // Destructor
+    ~InventoryManager() {
+        clearBST(root);
+    }
+
+    // Function to check inventory levels
+    void checkInventory() {
+        if (!root) {
+            throw runtime_error("Inventory is empty.");
+        }
+        cout << "Current Inventory (from file: " << currentFilename << "):\n";
+        inorderTraversal(root);
+    }
+
+    // Function to add an item to inventory
+    void addItem(const string& name, int quantity, double price) {
+        if (quantity < 0 || price < 0) {
+            throw invalid_argument("Quantity and price cannot be negative.");
+        }
+        root = insertItem(root, InventoryItem(name, quantity, price));
+        cout << "Item '" << name << "' added to inventory (from file: " << currentFilename << ")." << endl;
+    }
+
+    // Function to set notification thresholds
+    void setNotificationThreshold(const string& name, int threshold) {
+        notificationThresholds[name] = threshold;
+        cout << "Notification threshold set for item '" << name << "'." << endl;
+    }
+
+    // Function to receive notifications for low stock
+    void receiveNotifications() {
+        for (const auto& item : notificationThresholds) {
+            if (getItemQuantity(root, item.first) < item.second) {
+                cout << "Notification: " << item.first << " is below the threshold!" << endl;
+            }
+        }
+    }
+
+    // Function to generate purchase orders
+    void generatePurchaseOrders() {
+        for (const auto& item : notificationThresholds) {
+            if (getItemQuantity(root, item.first) < item.second) {
+                purchaseOrders.push(item.first);
+            }
+        }
+    }
+
+    // Function to edit inventory levels
+    void editInventory(const string& name, int newQuantity) {
+        int oldQuantity = getItemQuantity(root, name);
+        if (oldQuantity == -1) {
+            throw invalid_argument("Item not found in inventory.");
+        }
+        undoStack.push(make_pair(name, oldQuantity));
+        redoStack = stack<pair<string, int>>(); // Clear redo stack
+        root = deleteItem(root, name);
+        root = insertItem(root, InventoryItem(name, newQuantity, getPrice(name)));
+        cout << "Inventory level of '" << name << "' updated (from file: " << currentFilename << ")." << endl;
+    }
+
+    // Function to edit prices
+    void editPrice(const string& name) {
+        double newPrice = 0.0;
+        string input;
+
+        // Loop until a valid numeric price is entered
+        while (true) {
+            cout << "Enter new price for item '" << name << "': ";
+            cin >> input;
+
+            // Check if the input can be converted to a valid double
+            try {
+                newPrice = stod(input);
+                // Check if the price is non-negative
+                if (newPrice >= 0) {
+                    break; // Valid price entered, exit the loop
+                } else {
+                    cerr << "Error: Price cannot be negative. Please enter a non-negative price." << endl;
+                }
+            } catch (const exception& e) {
+                cerr << "Error: Invalid input. Please enter a valid numeric price." << endl;
+            }
+
+            // Clear input stream
+            cin.clear();
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+        }
+
+        // Find the item in the inventory
+        TreeNode* node = findItem(root, name);
+        if (node) {
+            // If the item exists, update its price
+            node->item.price = newPrice;
+            cout << "Price of item '" << name << "' updated (from file: " << currentFilename << ")." << endl;
+        } else {
+            // If the item does not exist, display an error message
+            cerr << "Error: Item '" << name << "' not found in inventory." << endl;
+        }
+    }
+
+    // Function to generate reports
+    void generateReports() {
+        cout << "Inventory Report (from file: " << currentFilename << "):\n";
+        inorderTraversal(root);
+        cout << "\nEvent Log:\n";
+        for (const auto& event : eventLog) {
+            cout << event << endl;
+        }
+
+        // Data analysis logic
+        cout << "\nTop Selling Products for the Day:" << endl;
+        vector<pair<string, int>> topSelling = getTopSellingProducts();
+        int rank = 1;
+        for (const auto& item : topSelling) {
+            cout << rank << ". " << item.first << " - Quantity Sold: " << item.second << endl;
+            rank++;
+        }
+    }
+
+    // Function to get top selling products
+    vector<pair<string, int>> getTopSellingProducts() {
+        vector<pair<string, int>> sortedSales(dailySales.begin(), dailySales.end());
+        sort(sortedSales.begin(), sortedSales.end(), [](const pair<string, int>& a, const pair<string, int>& b) {
+            return a.second > b.second;
+        });
+        return sortedSales;
+    }
+
+    // Helper function to save inventory data to file
+    void saveInventoryToFile(const string& filename) {
+        ofstream outFile(filename);
+        if (!outFile.is_open()) {
+            throw runtime_error("Failed to open file for writing.");
+        }
+        saveInventoryHelper(root, outFile);
+        outFile.close();
+        cout << "Inventory saved to file: " << filename << endl;
+        currentFilename = filename;
+    }
+
+    // Function to load inventory data from file
+    void loadInventoryFromFile(const string& filename) {
+        ifstream inFile(filename);
+        if (!inFile.is_open()) {
+            throw runtime_error("Failed to open file for reading.");
+        }
+        clearBST(root); // Clear existing inventory
+        string name;
+        int quantity;
+        double price;
+        while (inFile >> name >> quantity >> price) {
+            addItem(name, quantity, price);
+        }
+        inFile.close();
+        currentFilename = filename;
+    }
+
+    // Function for data analysis
+    void analyzeData() {
+        cout << "Performing data analysis..." << endl;
+        // Clear previous day's sales
+        dailySales.clear();
+        // Update daily sales based on event log
+        for (const auto& event : eventLog) {
+            size_t found = event.find("Sold ");
+            if (found != string::npos) {
+                size_t end = event.find(" of ", found);
+                size_t start = found + 5; // Length of "Sold "
+                string itemName = event.substr(end + 4); // Extract item name
+                int quantitySold = stoi(event.substr(start, end - start)); // Extract quantity sold
+                dailySales[itemName] += quantitySold;
+            }
+        }
+    }
+
+    // Function for logging
+    void logEvent(const string& event) {
+        eventLog.push_back(event);
+    }
+
+    // Function for monitoring
+    void monitorPerformance() {
+        cout << "Monitoring performance..." << endl;
+
+    }
+
+    // Function to sell items
+    void sellItem(const string& name, int quantity, const string& associateName) {
+        int currentQuantity = getItemQuantity(root, name);
+        if (currentQuantity == -1 || currentQuantity < quantity) {
+            throw invalid_argument("Not enough quantity available to sell.");
+        }
+        editInventory(name, currentQuantity - quantity);
+        logEvent("Sold " + to_string(quantity) + " of " + name + " by " + associateName);
+
+        // Update dailySales map
+        dailySales[name] += quantity;
+    }
+
+    // Function to buy items
+    void buyItem(const string& name, int quantity) {
+        int currentQuantity = getItemQuantity(root, name);
+        if (currentQuantity != -1 && quantity > 100) {
+            cout << "Cannot buy more than 100 units at once. Please try again." << endl;
+            return;
+        }
+        if (currentQuantity != -1) {
+            editInventory(name, currentQuantity + quantity);
+        } else {
+            addItem(name, quantity, 0); // Assuming price is not provided during buying
+            logEvent("Bought " + to_string(quantity) + " of new item " + name);
+        }
+    }
+
+    // Function for undoing the last inventory change
+    void undo() {
+        if (undoStack.empty()) {
+            cout << "Nothing to undo." << endl;
+            return;
+        }
+        pair<string, int> lastChange = undoStack.top();
+        undoStack.pop();
+        redoStack.push(make_pair(lastChange.first, getItemQuantity(root, lastChange.first)));
+        root = deleteItem(root, lastChange.first);
+        root = insertItem(root, InventoryItem(lastChange.first, lastChange.second, getPrice(lastChange.first)));
+        cout << "Undo: Last inventory change undone (from file: " << currentFilename << ")." << endl;
+    }
+
+    // Function for redoing the last undone inventory change
+    void redo() {
+        if (redoStack.empty()) {
+            cout << "Nothing to redo." << endl;
+            return;
+        }
+        pair<string, int> lastUndo = redoStack.top();
+        redoStack.pop();
+        undoStack.push(make_pair(lastUndo.first, getItemQuantity(root, lastUndo.first)));
+        root = deleteItem(root, lastUndo.first);
+        root = insertItem(root, InventoryItem(lastUndo.first, lastUndo.second, getPrice(lastUndo.first)));
+        cout << "Redo: Last undone inventory change redone (from file: " << currentFilename << ")." << endl;
+    }
+
+private:
+    // Helper function to perform inorder traversal
+    void inorderTraversal(TreeNode* node) {
+        if (node) {
+            inorderTraversal(node->left);
+            cout << "Name: " << node->item.name << ", Quantity: " << node->item.quantity << ", Price: $" << node->item.price << endl;
+            inorderTraversal(node->right);
+        }
+    }
+
+    // Helper function to save inventory to file
+    void saveInventoryHelper(TreeNode* node, ofstream& outFile) {
+        if (node) {
+            saveInventoryHelper(node->left, outFile);
+            outFile << node->item.name << " " << node->item.quantity << " " << node->item.price << endl;
+            saveInventoryHelper(node->right, outFile);
+        }
+    }
+
+    // Helper function to clear BST
+    void clearBST(TreeNode* node) {
+        if (node) {
+            clearBST(node->left);
+            clearBST(node->right);
+            delete node;
+        }
+        root = nullptr; // Set root to nullptr after clearing the tree
+    }
+
+    // Helper function to find an item in BST
+    TreeNode* findItem(TreeNode* node, const string& name) {
+        while (node) {
+            if (name < node->item.name) {
+                node = node->left;
+            } else if (name > node->item.name) {
+                node = node->right;
+            } else {
+                return node; // Found the item
+            }
+        }
+        return nullptr; // Item not found
+    }
+
+    // Helper function to insert item into BST
+    TreeNode* insertItem(TreeNode* node, const InventoryItem& newItem) {
+        if (!node) {
+            return new TreeNode(newItem);
+        }
+        if (newItem.name < node->item.name) {
+            node->left = insertItem(node->left, newItem);
+        } else if (newItem.name > node->item.name) {
+            node->right = insertItem(node->right, newItem);
+        }
+        return node;
+    }
+
+    // Helper function to delete item from BST
+    TreeNode* deleteItem(TreeNode* node, const string& name) {
+        if (!node) {
+            return nullptr;
+        }
+        if (name < node->item.name) {
+            node->left = deleteItem(node->left, name);
+        } else if (name > node->item.name) {
+            node->right = deleteItem(node->right, name);
+        } else {
+            if (!node->left && !node->right) {
+                delete node;
+                return nullptr;
+            } else if (!node->left) {
+                TreeNode* temp = node->right;
+                delete node;
+                return temp;
+            } else if (!node->right) {
+                TreeNode* temp = node->left;
+                delete node;
+                return temp;
+            } else {
+                TreeNode* successor = findMin(node->right);
+                node->item = successor->item;
+                node->right = deleteItem(node->right, successor->item.name);
+            }
+        }
+        return node;
+    }
+
+    // Helper function to find minimum node in BST
+    TreeNode* findMin(TreeNode* node) {
+        while (node->left) {
+            node = node->left;
+        }
+        return node;
+    }
+
+    // Helper function to get quantity of an item in BST
+    int getItemQuantity(TreeNode* node, const string& name) {
+        while (node) {
+            if (name < node->item.name) {
+                node = node->left;
+            } else if (name > node->item.name) {
+                node = node->right;
+            } else {
+                return node->item.quantity;
+            }
+        }
+        return -1;
+    }
+
+    // Helper function to get price of an item in BST
+    double getPrice(const string& name) {
+        TreeNode* node = root;
+        while (node) {
+            if (name < node->item.name) {
+                node = node->left;
+            } else if (name > node->item.name) {
+                node = node->right;
+            } else {
+                return node->item.price;
+            }
+        }
+        return 0.0; // Default price if not found
+    }
+
+    // Helper function to get quantity of an item in BST
+    int getQuantity(TreeNode* node, const string& name) {
+        while (node) {
+            if (name < node->item.name) {
+                node = node->left;
+            } else if (name > node->item.name) {
+                node = node->right;
+            } else {
+                return node->item.quantity;
+            }
+        }
+        return -1;
+    }
+};
+
+int main() {
+    string password;
+    cout << "Enter the password to access the system: ";
+    cin >> password;
+
+    if (password != "password") {
+        cout << "Incorrect password. Access denied." << endl;
+        return 1;
+    }
+
+    cout << "Access granted. Welcome to the Inventory Management System!" << endl;
+
+    InventoryManager manager;
+
+    bool exitProgram = false;
+    while (!exitProgram) {
+        cout << "\nInventory Management Menu:\n"
+             << "1. Check Inventory\n"
+             << "2. Generate Reports\n"
+             << "3. Load Inventory from File\n"
+             << "4. Analyze Data\n"
+             << "5. Log Event\n"
+             << "6. Monitor Performance\n"
+             << "7. Sell Items\n"
+             << "8. Buy Items\n"
+             << "9. Edit Prices\n"
+             << "10. Set Notification Threshold\n"
+             << "11. Receive Notifications\n"
+             << "12. Generate Purchase Orders\n"
+             << "13. Undo\n"
+             << "14. Redo\n"
+             << "15. Exit\n"
+             << "Enter your choice: ";
+
+        int choice;
+        cin >> choice;
+
+        switch (choice) {
+            case 1:
+                try {
+                    manager.checkInventory();
+                } catch (const exception& e) {
+                    cerr << "Error: " << e.what() << endl;
+                }
+                break;
+            case 2:
+                try {
+                    manager.generateReports();
+                } catch (const exception& e) {
+                    cerr << "Error: " << e.what() << endl;
+                }
+                break;
+            case 3:
+                {
+                    string filename;
+                    cout << "Enter the filename to load inventory from: ";
+                    cin >> filename;
+                    try {
+                        manager.loadInventoryFromFile(filename);
+                    } catch (const exception& e) {
+                        cerr << "Error: " << e.what() << endl;
+                    }
+                }
+                break;
+            case 4:
+                manager.analyzeData();
+                break;
+            case 5:
+                {
+                    string event;
+                    cout << "Enter the event to log: ";
+                    cin.ignore();
+                    getline(cin, event);
+                    manager.logEvent(event);
+                }
+                break;
+            case 6:
+                manager.monitorPerformance();
+                break;
+            case 7:
+                {
+                    string name, associateName;
+                    int quantity;
+                    cout << "Enter item name to sell: ";
+                    cin >> name;
+                    cout << "Enter quantity to sell: ";
+                    cin >> quantity;
+                    cout << "Enter associate name: ";
+                    cin >> associateName;
+                    try {
+                        manager.sellItem(name, quantity, associateName);
+                    } catch (const exception& e) {
+                        cerr << "Error: " << e.what() << endl;
+                    }
+                }
+                break;
+            case 8:
+                {
+                    string name;
+                    int quantity;
+                    cout << "Enter item name to buy: ";
+                    cin >> name;
+                    cout << "Enter quantity to buy: ";
+                    cin >> quantity;
+                    try {
+                        manager.buyItem(name, quantity);
+                    } catch (const exception& e) {
+                        cerr << "Error: " << e.what() << endl;
+                    }
+                }
+                break;
+            case 9:
+                {
+                    string name;
+                    double price;
+                    cout << "Enter item name to edit price: ";
+                    cin >> name;
+                    cout << "Enter new price: ";
+                    cin >> price;
+                    try {
+                        manager.editPrice(name);
+                    } catch (const exception& e) {
+                        cerr << "Error: " << e.what() << endl;
+                    }
+                }
+                break;
+            case 10:
+                {
+                    string name;
+                    int threshold;
+                    cout << "Enter item name to set notification threshold: ";
+                    cin >> name;
+                    cout << "Enter notification threshold: ";
+                    cin >> threshold;
+                    manager.setNotificationThreshold(name, threshold);
+                }
+                break;
+            case 11:
+                manager.receiveNotifications();
+                break;
+            case 12:
+                manager.generatePurchaseOrders();
+                break;
+            case 13:
+                manager.undo();
+                break;
+            case 14:
+                manager.redo();
+                break;
+            case 15:
+                exitProgram = true;
+                break;
+            default:
+                cout << "Invalid choice. Please enter a valid option.\n";
+        }
+    }
+
+    return 0;
+}
